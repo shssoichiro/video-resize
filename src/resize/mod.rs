@@ -1,6 +1,7 @@
-use std::mem::align_of;
+pub mod algorithms;
 
 use nalgebra::DMatrix;
+use std::mem::align_of;
 use v_frame::{
     frame::Frame,
     prelude::{ChromaSampling, Pixel},
@@ -137,134 +138,8 @@ pub struct ResizeDimensions {
 
 pub trait ResizeAlgorithm {
     fn support() -> u32;
-    fn process(input: f64) -> f64;
-}
-
-pub mod algorithms {
-    use crate::ResizeAlgorithm;
-
-    pub struct Point;
-
-    impl ResizeAlgorithm for Point {
-        fn support() -> u32 {
-            0
-        }
-
-        fn process(input: f64) -> f64 {
-            todo!()
-        }
-    }
-
-    pub struct Bilinear;
-
-    impl ResizeAlgorithm for Bilinear {
-        fn support() -> u32 {
-            1
-        }
-
-        fn process(input: f64) -> f64 {
-            todo!()
-        }
-    }
-
-    // (1.0, 0.0)
-    pub struct BicubicBSpline;
-
-    impl ResizeAlgorithm for BicubicBSpline {
-        fn support() -> u32 {
-            2
-        }
-
-        fn process(input: f64) -> f64 {
-            todo!()
-        }
-    }
-
-    // (1/3, 1/3)
-    pub struct BicubicMitchell;
-
-    impl ResizeAlgorithm for BicubicMitchell {
-        fn support() -> u32 {
-            2
-        }
-
-        fn process(input: f64) -> f64 {
-            todo!()
-        }
-    }
-
-    // (0, 1/2)
-    pub struct BicubicCatmullRom;
-
-    impl ResizeAlgorithm for BicubicCatmullRom {
-        fn support() -> u32 {
-            2
-        }
-
-        fn process(input: f64) -> f64 {
-            todo!()
-        }
-    }
-
-    pub struct Lanczos3;
-
-    impl ResizeAlgorithm for Lanczos3 {
-        fn support() -> u32 {
-            3
-        }
-
-        fn process(input: f64) -> f64 {
-            todo!()
-        }
-    }
-
-    pub struct Lanczos4;
-
-    impl ResizeAlgorithm for Lanczos4 {
-        fn support() -> u32 {
-            4
-        }
-
-        fn process(input: f64) -> f64 {
-            todo!()
-        }
-    }
-
-    pub struct Spline16;
-
-    impl ResizeAlgorithm for Spline16 {
-        fn support() -> u32 {
-            2
-        }
-
-        fn process(input: f64) -> f64 {
-            todo!()
-        }
-    }
-
-    pub struct Spline36;
-
-    impl ResizeAlgorithm for Spline36 {
-        fn support() -> u32 {
-            3
-        }
-
-        fn process(input: f64) -> f64 {
-            todo!()
-        }
-    }
-
-    pub struct Spline64;
-
-    impl ResizeAlgorithm for Spline64 {
-        fn support() -> u32 {
-            4
-        }
-
-        fn process(input: f64) -> f64 {
-            todo!()
-        }
-    }
+    fn new() -> Self;
+    fn process(&self, x: f64) -> f64;
 }
 
 struct FilterContext {
@@ -289,6 +164,7 @@ fn compute_filter<F: ResizeAlgorithm>(
     let step = scale.min(1.0);
     let support = f64::from(F::support()) / step;
     let filter_size = (support.ceil() as usize * 2).max(1);
+    let f = F::new();
     let mut m: DMatrix<f64> = DMatrix::zeros(dest_dim, src_dim);
 
     let src_dim_f = src_dim as f64;
@@ -300,7 +176,7 @@ fn compute_filter<F: ResizeAlgorithm>(
         let mut total = 0.0_f64;
         for j in 0..filter_size {
             let xpos = begin_pos + j as f64;
-            total += F::process((xpos - pos) * step);
+            total += f.process((xpos - pos) * step);
         }
 
         let mut left = usize::MAX;
@@ -323,7 +199,7 @@ fn compute_filter<F: ResizeAlgorithm>(
             let idx = (real_pos.floor() as usize).min(src_dim - 1);
             // SAFETY: We know the bounds of this matrix and will not exceed it
             unsafe {
-                *m.get_unchecked_mut((i, idx)) += F::process((xpos - pos) * step) / total;
+                *m.get_unchecked_mut((i, idx)) += f.process((xpos - pos) * step) / total;
             }
             left = left.min(idx);
         }

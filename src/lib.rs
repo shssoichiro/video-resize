@@ -135,6 +135,7 @@ pub fn crop_u16(input: &Frame<u16>, dimensions: CropDimensions) -> Result<Frame<
 /// # Errors
 ///
 /// - If the resize dimensions are not even
+/// - If the specified input bit depth does not match the size of `T`
 pub fn resize<T: Pixel, F: ResizeAlgorithm>(
     input: &Frame<T>,
     dimensions: ResizeDimensions,
@@ -208,11 +209,17 @@ pub fn resize<T: Pixel, F: ResizeAlgorithm>(
 ///
 /// - If an unsupported target bit depth is chosen.
 ///   - Currently supported bit depths are 8, 10, 12, and 16.
+/// - If the specified input bit depth does not match the size of `T`
+/// - If the specified target bit depth does not match the size of `U`
+///
+/// # Panics
+///
+/// - Not yet implemented
 pub fn resample_bit_depth<T: Pixel, U: Pixel>(
-    input: &Frame<T>,
+    _input: &Frame<T>,
     input_bit_depth: usize,
     target_bit_depth: usize,
-    dither: bool,
+    _dither: bool,
 ) -> Result<Frame<U>> {
     if size_of::<T>() == 1 {
         ensure!(
@@ -249,10 +256,18 @@ pub fn resample_bit_depth<T: Pixel, U: Pixel>(
 }
 
 /// Resamples a video to the given chroma subsampling.
+///
+/// # Errors
+///
+/// - If the specified input bit depth does not match the size of `T`
+///
+/// # Panics
+///
+/// - Not yet implemented
 pub fn resample_chroma_sampling<T: Pixel, F: ResizeAlgorithm>(
-    input: &Frame<T>,
+    _input: &Frame<T>,
     input_bit_depth: usize,
-    target_chroma_sampling: ChromaSampling,
+    _target_chroma_sampling: ChromaSampling,
 ) -> Result<Frame<T>> {
     if size_of::<T>() == 1 {
         ensure!(
