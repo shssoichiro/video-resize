@@ -203,6 +203,114 @@ pub fn resize<T: Pixel, F: ResizeAlgorithm>(
     ))
 }
 
+#[cfg(feature = "devel")]
+pub fn resize_horizontal_u8_bicubic(input: &Frame<u8>, dest_width: usize) -> Frame<u8> {
+    use resize::algorithms::BicubicMitchell;
+
+    resize_horizontal::<u8, BicubicMitchell>(input, dest_width, 8)
+}
+
+#[cfg(feature = "devel")]
+pub fn resize_horizontal_u16_bicubic(
+    input: &Frame<u16>,
+    dest_width: usize,
+    input_bit_depth: usize,
+) -> Frame<u16> {
+    use resize::algorithms::BicubicMitchell;
+
+    resize_horizontal::<u16, BicubicMitchell>(input, dest_width, input_bit_depth)
+}
+
+#[cfg(feature = "devel")]
+pub fn resize_vertical_u8_bicubic(input: &Frame<u8>, dest_height: usize) -> Frame<u8> {
+    use resize::algorithms::BicubicMitchell;
+
+    resize_vertical::<u8, BicubicMitchell>(input, dest_height, 8)
+}
+
+#[cfg(feature = "devel")]
+pub fn resize_vertical_u16_bicubic(
+    input: &Frame<u16>,
+    dest_height: usize,
+    input_bit_depth: usize,
+) -> Frame<u16> {
+    use resize::algorithms::BicubicMitchell;
+
+    resize_vertical::<u16, BicubicMitchell>(input, dest_height, input_bit_depth)
+}
+
+#[cfg(feature = "devel")]
+pub fn resize_horizontal_u8_lanczos3(input: &Frame<u8>, dest_width: usize) -> Frame<u8> {
+    use resize::algorithms::Lanczos3;
+
+    resize_horizontal::<u8, Lanczos3>(input, dest_width, 8)
+}
+
+#[cfg(feature = "devel")]
+pub fn resize_horizontal_u16_lanczos3(
+    input: &Frame<u16>,
+    dest_width: usize,
+    input_bit_depth: usize,
+) -> Frame<u16> {
+    use resize::algorithms::Lanczos3;
+
+    resize_horizontal::<u16, Lanczos3>(input, dest_width, input_bit_depth)
+}
+
+#[cfg(feature = "devel")]
+pub fn resize_vertical_u8_lanczos3(input: &Frame<u8>, dest_height: usize) -> Frame<u8> {
+    use resize::algorithms::Lanczos3;
+
+    resize_vertical::<u8, Lanczos3>(input, dest_height, 8)
+}
+
+#[cfg(feature = "devel")]
+pub fn resize_vertical_u16_lanczos3(
+    input: &Frame<u16>,
+    dest_height: usize,
+    input_bit_depth: usize,
+) -> Frame<u16> {
+    use resize::algorithms::Lanczos3;
+
+    resize_vertical::<u16, Lanczos3>(input, dest_height, input_bit_depth)
+}
+
+#[cfg(feature = "devel")]
+pub fn resize_horizontal_u8_spline36(input: &Frame<u8>, dest_width: usize) -> Frame<u8> {
+    use resize::algorithms::Spline36;
+
+    resize_horizontal::<u8, Spline36>(input, dest_width, 8)
+}
+
+#[cfg(feature = "devel")]
+pub fn resize_horizontal_u16_spline36(
+    input: &Frame<u16>,
+    dest_width: usize,
+    input_bit_depth: usize,
+) -> Frame<u16> {
+    use resize::algorithms::Spline36;
+
+    resize_horizontal::<u16, Spline36>(input, dest_width, input_bit_depth)
+}
+
+#[cfg(feature = "devel")]
+pub fn resize_vertical_u8_spline36(input: &Frame<u8>, dest_height: usize) -> Frame<u8> {
+    use resize::algorithms::Spline36;
+
+    resize_vertical::<u8, Spline36>(input, dest_height, 8)
+}
+
+#[cfg(feature = "devel")]
+pub fn resize_vertical_u16_spline36(
+    input: &Frame<u16>,
+    dest_height: usize,
+    input_bit_depth: usize,
+) -> Frame<u16> {
+    use resize::algorithms::Spline36;
+
+    resize_vertical::<u16, Spline36>(input, dest_height, input_bit_depth)
+}
+
 /// Resamples a video to the given bit depth.
 ///
 /// # Errors

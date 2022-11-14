@@ -148,10 +148,10 @@ struct FilterContext {
     // filter_rows: usize,
     // input_width: usize,
     // stride: usize,
-    // data: Vec<f32>,
+    // data: Box<[f32]>,
     stride_i16: usize,
-    data_i16: Vec<i16>,
-    left: Vec<usize>,
+    data_i16: Box<[i16]>,
+    left: Box<[usize]>,
 }
 
 fn compute_filter<F: ResizeAlgorithm>(
@@ -240,10 +240,10 @@ fn matrix_to_filter(m: &DMatrix<f64>) -> FilterContext {
         // filter_rows: m.nrows(),
         // input_width: m.ncols(),
         // stride,
-        // data: vec![0.0; stride * m.nrows()],
+        // data: vec![0.0; stride * m.nrows()].into_boxed_slice(),
         stride_i16,
-        data_i16: vec![0; stride_i16 * m.nrows()],
-        left: vec![0; m.nrows()],
+        data_i16: vec![0; stride_i16 * m.nrows()].into_boxed_slice(),
+        left: vec![0; m.nrows()].into_boxed_slice(),
     };
 
     for (i, row) in m.row_iter().enumerate() {
@@ -308,64 +308,4 @@ fn matrix_to_filter(m: &DMatrix<f64>) -> FilterContext {
     }
 
     e
-}
-
-#[cfg(feature = "devel")]
-pub fn resize_horizontal_u8_bicubic(input: &Frame<u8>, dest_height: usize) -> Frame<u8> {
-    todo!();
-}
-
-#[cfg(feature = "devel")]
-pub fn resize_horizontal_u16_bicubic(input: &Frame<u16>, dest_height: usize) -> Frame<u16> {
-    todo!();
-}
-
-#[cfg(feature = "devel")]
-pub fn resize_vertical_u8_bicubic(input: &Frame<u8>, dest_width: usize) -> Frame<u8> {
-    todo!();
-}
-
-#[cfg(feature = "devel")]
-pub fn resize_vertical_u16_bicubic(input: &Frame<u16>, dest_width: usize) -> Frame<u16> {
-    todo!();
-}
-
-#[cfg(feature = "devel")]
-pub fn resize_horizontal_u8_lanczos3(input: &Frame<u8>, dest_height: usize) -> Frame<u8> {
-    todo!();
-}
-
-#[cfg(feature = "devel")]
-pub fn resize_horizontal_u16_lanczos3(input: &Frame<u16>, dest_height: usize) -> Frame<u16> {
-    todo!();
-}
-
-#[cfg(feature = "devel")]
-pub fn resize_vertical_u8_lanczos3(input: &Frame<u8>, dest_width: usize) -> Frame<u8> {
-    todo!();
-}
-
-#[cfg(feature = "devel")]
-pub fn resize_vertical_u16_lanczos3(input: &Frame<u16>, dest_width: usize) -> Frame<u16> {
-    todo!();
-}
-
-#[cfg(feature = "devel")]
-pub fn resize_horizontal_u8_spline36(input: &Frame<u8>, dest_height: usize) -> Frame<u8> {
-    todo!();
-}
-
-#[cfg(feature = "devel")]
-pub fn resize_horizontal_u16_spline36(input: &Frame<u16>, dest_height: usize) -> Frame<u16> {
-    todo!();
-}
-
-#[cfg(feature = "devel")]
-pub fn resize_vertical_u8_spline36(input: &Frame<u8>, dest_width: usize) -> Frame<u8> {
-    todo!();
-}
-
-#[cfg(feature = "devel")]
-pub fn resize_vertical_u16_spline36(input: &Frame<u16>, dest_width: usize) -> Frame<u16> {
-    todo!();
 }
