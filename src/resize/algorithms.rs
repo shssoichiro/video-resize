@@ -2,6 +2,9 @@ use std::f64::consts::PI;
 
 use crate::ResizeAlgorithm;
 
+/// Very fast, simple point resizing.
+/// Likely to produce heavy aliasing--i.e. a pixelated effect.
+/// Not generally useful.
 pub struct Point;
 
 impl ResizeAlgorithm for Point {
@@ -21,6 +24,8 @@ impl ResizeAlgorithm for Point {
     }
 }
 
+/// A bilinear resizer.
+/// Tends to produce heavy blurring, not generally useful.
 pub struct Bilinear;
 
 impl ResizeAlgorithm for Bilinear {
@@ -40,6 +45,8 @@ impl ResizeAlgorithm for Bilinear {
     }
 }
 
+/// A bicubic resizer with params (b=1.0, c=0.0).
+/// Tends to produce heavy blurring, not generally useful.
 pub struct BicubicBSpline {
     polys: BicubicPolys,
 }
@@ -63,6 +70,33 @@ impl ResizeAlgorithm for BicubicBSpline {
     }
 }
 
+/// A bicubic resizer with params (b=0.0, c=0.0).
+/// Useful for downscaling.
+pub struct BicubicHermite {
+    polys: BicubicPolys,
+}
+
+impl ResizeAlgorithm for BicubicHermite {
+    #[inline(always)]
+    fn support() -> u32 {
+        2
+    }
+
+    #[inline(always)]
+    fn new() -> Self {
+        Self {
+            polys: BicubicPolys::new(0.0, 0.0),
+        }
+    }
+
+    #[inline(always)]
+    fn process(&self, x: f64) -> f64 {
+        self.polys.process(x)
+    }
+}
+
+/// A bicubic resizer with params (b=1/3, c=1/3).
+/// Useful for downscaling.
 pub struct BicubicMitchell {
     polys: BicubicPolys,
 }
@@ -86,7 +120,8 @@ impl ResizeAlgorithm for BicubicMitchell {
     }
 }
 
-// (0, 1/2)
+/// A bicubic resizer with params (b=0.0, c=0.5).
+/// Fast, general purpose.
 pub struct BicubicCatmullRom {
     polys: BicubicPolys,
 }
@@ -110,6 +145,8 @@ impl ResizeAlgorithm for BicubicCatmullRom {
     }
 }
 
+/// 3-tap Lanczos resizer.
+/// Sharp, good for upscaling.
 pub struct Lanczos3;
 
 impl ResizeAlgorithm for Lanczos3 {
@@ -129,6 +166,8 @@ impl ResizeAlgorithm for Lanczos3 {
     }
 }
 
+/// 4-tap Lanczos resizer.
+/// Sharp, good for upscaling.
 pub struct Lanczos4;
 
 impl ResizeAlgorithm for Lanczos4 {
@@ -148,6 +187,8 @@ impl ResizeAlgorithm for Lanczos4 {
     }
 }
 
+/// 16-tap spline resizer.
+/// Good balance between speed, sharpness, and ringing.
 pub struct Spline16;
 
 impl ResizeAlgorithm for Spline16 {
@@ -176,6 +217,8 @@ impl ResizeAlgorithm for Spline16 {
     }
 }
 
+/// 36-tap spline resizer.
+/// High quality, good balance between sharpness and ringing.
 pub struct Spline36;
 
 impl ResizeAlgorithm for Spline36 {
@@ -208,6 +251,8 @@ impl ResizeAlgorithm for Spline36 {
     }
 }
 
+/// 64-tap spline resizer.
+/// High quality, good balance between sharpness and ringing.
 pub struct Spline64;
 
 impl ResizeAlgorithm for Spline64 {
