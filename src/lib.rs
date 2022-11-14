@@ -38,6 +38,16 @@
 #![warn(clippy::use_debug)]
 #![warn(clippy::verbose_file_reads)]
 
+mod resize;
+mod util;
+
+use std::mem::size_of;
+
+pub use crate::resize::{algorithms, ResizeAlgorithm, ResizeDimensions};
+use crate::{
+    resize::{resize_horizontal, resize_vertical, should_resize_horiz_first},
+    util::get_chroma_sampling,
+};
 use anyhow::{ensure, Result};
 use v_frame::{
     frame::Frame,
@@ -77,16 +87,7 @@ pub fn crop<T: Pixel>(input: &Frame<T>, dimensions: CropDimensions) -> Result<Fr
 
     let new_w = input.planes[0].cfg.width - dimensions.left - dimensions.right;
     let new_h = input.planes[0].cfg.height - dimensions.top - dimensions.bottom;
-    let chroma_sampling = if input.planes[1].cfg.width == 0 {
-        ChromaSampling::Cs400
-    } else {
-        match input.planes[1].cfg.xdec + input.planes[1].cfg.ydec {
-            2 => ChromaSampling::Cs420,
-            1 => ChromaSampling::Cs422,
-            0 => ChromaSampling::Cs444,
-            _ => unreachable!(),
-        }
-    };
+    let chroma_sampling = get_chroma_sampling(input);
     let mut output: Frame<T> = Frame::new_with_padding(new_w, new_h, chroma_sampling, 0);
     for p in 0..(if chroma_sampling == ChromaSampling::Cs400 {
         1
@@ -129,34 +130,76 @@ pub fn crop_u16(input: &Frame<u16>, dimensions: CropDimensions) -> Result<Frame<
     crop::<u16>(input, dimensions)
 }
 
-/// Specifies the target resolution for the resized image.
-#[derive(Debug, Clone, Copy)]
-pub struct ResizeDimensions {
-    pub width: usize,
-    pub height: usize,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum ResizeAlgorithm {
-    BicubicCatmullRom,
-}
-
 /// Resizes a video to the given target dimensions.
 ///
 /// # Errors
 ///
 /// - If the resize dimensions are not even
-pub fn resize<T: Pixel>(
+pub fn resize<T: Pixel, F: ResizeAlgorithm>(
     input: &Frame<T>,
     dimensions: ResizeDimensions,
-    algorithm: ResizeAlgorithm,
+    input_bit_depth: usize,
 ) -> Result<Frame<T>> {
+    if size_of::<T>() == 1 {
+        ensure!(
+            input_bit_depth == 8,
+            "input bit depth must be 8 for 8-bit pixel type"
+        );
+    } else if size_of::<T>() == 2 {
+        ensure!(
+            input_bit_depth > 8 && input_bit_depth <= 16,
+            "input bit depth must be between 9-16 for 8-bit pixel type"
+        );
+    } else {
+        unreachable!("32-bit types not implemented in v_frame");
+    }
     ensure!(
         dimensions.width % 2 == 0 && dimensions.height % 2 == 0,
         "Resize dimensions must be a multiple of 2"
     );
+    ensure!(
+        dimensions.width >= 4 && dimensions.height >= 4,
+        "Resulting image must be at least 4x4 pixels"
+    );
 
-    todo!()
+    let src_w = input.planes[0].cfg.width;
+    let src_h = input.planes[0].cfg.height;
+    let resize_horiz = src_w != dimensions.width;
+    let resize_vert = src_h != dimensions.height;
+    if !resize_horiz {
+        return Ok(resize_vertical::<T, F>(
+            input,
+            dimensions.height,
+            input_bit_depth,
+        ));
+    }
+
+    if !resize_vert {
+        return Ok(resize_horizontal::<T, F>(
+            input,
+            dimensions.width,
+            input_bit_depth,
+        ));
+    }
+
+    let horiz_first = should_resize_horiz_first(
+        dimensions.width as f32 / src_w as f32,
+        dimensions.height as f32 / src_h as f32,
+    );
+    if horiz_first {
+        let temp = resize_horizontal::<T, F>(input, dimensions.width, input_bit_depth);
+        return Ok(resize_vertical::<T, F>(
+            &temp,
+            dimensions.height,
+            input_bit_depth,
+        ));
+    }
+    let temp = resize_vertical::<T, F>(input, dimensions.height, input_bit_depth);
+    Ok(resize_horizontal::<T, F>(
+        &temp,
+        dimensions.width,
+        input_bit_depth,
+    ))
 }
 
 /// Resamples a video to the given bit depth.
@@ -167,9 +210,36 @@ pub fn resize<T: Pixel>(
 ///   - Currently supported bit depths are 8, 10, 12, and 16.
 pub fn resample_bit_depth<T: Pixel, U: Pixel>(
     input: &Frame<T>,
+    input_bit_depth: usize,
     target_bit_depth: usize,
     dither: bool,
 ) -> Result<Frame<U>> {
+    if size_of::<T>() == 1 {
+        ensure!(
+            input_bit_depth == 8,
+            "input bit depth must be 8 for 8-bit pixel type"
+        );
+    } else if size_of::<T>() == 2 {
+        ensure!(
+            input_bit_depth > 8 && input_bit_depth <= 16,
+            "input bit depth must be between 9-16 for 8-bit pixel type"
+        );
+    } else {
+        unreachable!("32-bit types not implemented in v_frame");
+    }
+    if size_of::<U>() == 1 {
+        ensure!(
+            target_bit_depth == 8,
+            "target bit depth must be 8 for 8-bit pixel type"
+        );
+    } else if size_of::<U>() == 2 {
+        ensure!(
+            target_bit_depth > 8 && target_bit_depth <= 16,
+            "target bit depth must be between 9-16 for 8-bit pixel type"
+        );
+    } else {
+        unreachable!("32-bit types not implemented in v_frame");
+    }
     ensure!(
         [8, 10, 12, 16].contains(&target_bit_depth),
         "Currently supported bit depths are 8, 10, 12, and 16"
@@ -179,11 +249,24 @@ pub fn resample_bit_depth<T: Pixel, U: Pixel>(
 }
 
 /// Resamples a video to the given chroma subsampling.
-#[must_use]
-pub fn resample_chroma_sampling<T: Pixel>(
+pub fn resample_chroma_sampling<T: Pixel, F: ResizeAlgorithm>(
     input: &Frame<T>,
+    input_bit_depth: usize,
     target_chroma_sampling: ChromaSampling,
-    algorithm: ResizeAlgorithm,
-) -> Frame<T> {
+) -> Result<Frame<T>> {
+    if size_of::<T>() == 1 {
+        ensure!(
+            input_bit_depth == 8,
+            "input bit depth must be 8 for 8-bit pixel type"
+        );
+    } else if size_of::<T>() == 2 {
+        ensure!(
+            input_bit_depth > 8 && input_bit_depth <= 16,
+            "input bit depth must be between 9-16 for 8-bit pixel type"
+        );
+    } else {
+        unreachable!("32-bit types not implemented in v_frame");
+    }
+
     todo!()
 }
