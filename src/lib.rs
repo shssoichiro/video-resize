@@ -323,6 +323,7 @@ pub fn resize_vertical_u16_spline36(
 /// # Panics
 ///
 /// - Not yet implemented
+#[doc(hidden)]
 pub fn resample_bit_depth<T: Pixel, U: Pixel>(
     _input: &Frame<T>,
     input_bit_depth: usize,
@@ -372,6 +373,7 @@ pub fn resample_bit_depth<T: Pixel, U: Pixel>(
 /// # Panics
 ///
 /// - Not yet implemented
+#[doc(hidden)]
 pub fn resample_chroma_sampling<T: Pixel, F: ResizeAlgorithm>(
     _input: &Frame<T>,
     input_bit_depth: usize,

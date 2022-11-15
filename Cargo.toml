@@ -3,6 +3,10 @@ name = "video-resize"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+description = "Video crop and resize library in Rust, for use with the rav1e/v_frame ecosystem"
+repository = "https://github.com/shssoichiro/video-resize"
+documentation = "https://docs.rs/video-resize"
+rust-version = "1.61.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
