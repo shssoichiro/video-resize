@@ -395,3 +395,496 @@ pub fn resample_chroma_sampling<T: Pixel, F: ResizeAlgorithm>(
 
     todo!()
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, path::Path};
+
+    use image::{DynamicImage, Rgb32FImage};
+    use yuvxyb::{
+        ColorPrimaries, Frame, MatrixCoefficients, Rgb, TransferCharacteristic, Yuv, YuvConfig,
+    };
+
+    use crate::{
+        algorithms::{BicubicCatmullRom, Bilinear, Lanczos3, Point, Spline64},
+        crop, resize, CropDimensions, ResizeDimensions,
+    };
+
+    fn get_u8_test_image() -> Frame<u8> {
+        let i = image::open("./test_files/ducks_take_off.png")
+            .unwrap()
+            .to_rgb32f();
+        let rgb = Rgb::new(
+            i.pixels().map(|p| [p[0], p[1], p[2]]).collect(),
+            i.width() as usize,
+            i.height() as usize,
+            TransferCharacteristic::BT1886,
+            ColorPrimaries::BT709,
+        )
+        .unwrap();
+        let yuv: Yuv<u8> = (
+            rgb,
+            YuvConfig {
+                bit_depth: 8,
+                subsampling_x: 1,
+                subsampling_y: 1,
+                full_range: false,
+                matrix_coefficients: MatrixCoefficients::BT709,
+                transfer_characteristics: TransferCharacteristic::BT1886,
+                color_primaries: ColorPrimaries::BT709,
+            },
+        )
+            .try_into()
+            .unwrap();
+        let data = yuv.data();
+        Frame {
+            planes: [data[0].clone(), data[1].clone(), data[2].clone()],
+        }
+    }
+
+    fn get_u16_test_image() -> Frame<u16> {
+        let i = image::open("./test_files/ducks_take_off.png")
+            .unwrap()
+            .to_rgb32f();
+        let rgb = Rgb::new(
+            i.pixels().map(|p| [p[0], p[1], p[2]]).collect(),
+            i.width() as usize,
+            i.height() as usize,
+            TransferCharacteristic::BT1886,
+            ColorPrimaries::BT709,
+        )
+        .unwrap();
+        let yuv: Yuv<u16> = (
+            rgb,
+            YuvConfig {
+                bit_depth: 10,
+                subsampling_x: 1,
+                subsampling_y: 1,
+                full_range: false,
+                matrix_coefficients: MatrixCoefficients::BT709,
+                transfer_characteristics: TransferCharacteristic::BT1886,
+                color_primaries: ColorPrimaries::BT709,
+            },
+        )
+            .try_into()
+            .unwrap();
+        let data = yuv.data();
+        Frame {
+            planes: [data[0].clone(), data[1].clone(), data[2].clone()],
+        }
+    }
+
+    fn output_image_from_u8(image: Frame<u8>, filename: &str) {
+        let width = image.planes[0].cfg.width;
+        let height = image.planes[0].cfg.height;
+        let yuv: Yuv<u8> = Yuv::new(
+            image,
+            YuvConfig {
+                bit_depth: 8,
+                subsampling_x: 1,
+                subsampling_y: 1,
+                full_range: false,
+                matrix_coefficients: MatrixCoefficients::BT709,
+                transfer_characteristics: TransferCharacteristic::BT1886,
+                color_primaries: ColorPrimaries::BT709,
+            },
+        )
+        .unwrap();
+        let rgb: Rgb = yuv.try_into().unwrap();
+        let i = DynamicImage::ImageRgb32F(
+            Rgb32FImage::from_vec(
+                width as u32,
+                height as u32,
+                rgb.data().iter().copied().flatten().collect(),
+            )
+            .unwrap(),
+        )
+        .to_rgb8();
+        if !Path::new("/tmp/video-resize-tests").is_dir() {
+            fs::create_dir_all("/tmp/video-resize-tests").unwrap();
+        }
+        i.save(filename).unwrap();
+    }
+
+    fn output_image_from_u16(image: Frame<u16>, filename: &str) {
+        let width = image.planes[0].cfg.width;
+        let height = image.planes[0].cfg.height;
+        let yuv: Yuv<u16> = Yuv::new(
+            image,
+            YuvConfig {
+                bit_depth: 10,
+                subsampling_x: 1,
+                subsampling_y: 1,
+                full_range: false,
+                matrix_coefficients: MatrixCoefficients::BT709,
+                transfer_characteristics: TransferCharacteristic::BT1886,
+                color_primaries: ColorPrimaries::BT709,
+            },
+        )
+        .unwrap();
+        let rgb: Rgb = yuv.try_into().unwrap();
+        let i = DynamicImage::ImageRgb32F(
+            Rgb32FImage::from_vec(
+                width as u32,
+                height as u32,
+                rgb.data().iter().copied().flatten().collect(),
+            )
+            .unwrap(),
+        )
+        .to_rgb16();
+        if !Path::new("/tmp/video-resize-tests").is_dir() {
+            fs::create_dir_all("/tmp/video-resize-tests").unwrap();
+        }
+        i.save(filename).unwrap();
+    }
+
+    #[test]
+    fn crop_u8() {
+        let input = get_u8_test_image();
+        let output = crop::<u8>(
+            &input,
+            CropDimensions {
+                top: 40,
+                bottom: 40,
+                left: 20,
+                right: 20,
+            },
+        )
+        .unwrap();
+        output_image_from_u8(output, "/tmp/video-resize-tests/crop_u8.png");
+    }
+
+    #[test]
+    fn crop_u16() {
+        let input = get_u16_test_image();
+        let output = crop::<u16>(
+            &input,
+            CropDimensions {
+                top: 40,
+                bottom: 40,
+                left: 20,
+                right: 20,
+            },
+        )
+        .unwrap();
+        output_image_from_u16(output, "/tmp/video-resize-tests/crop_u16.png");
+    }
+
+    #[test]
+    fn resize_point_u8_down() {
+        let input = get_u8_test_image();
+        let output = resize::<u8, Point>(
+            &input,
+            ResizeDimensions {
+                width: 1280,
+                height: 720,
+            },
+            8,
+        )
+        .unwrap();
+        output_image_from_u8(output, "/tmp/video-resize-tests/resize_point_u8_down.png");
+    }
+
+    #[test]
+    fn resize_point_u16_down() {
+        let input = get_u16_test_image();
+        let output = resize::<u16, Point>(
+            &input,
+            ResizeDimensions {
+                width: 1280,
+                height: 720,
+            },
+            10,
+        )
+        .unwrap();
+        output_image_from_u16(output, "/tmp/video-resize-tests/resize_point_u16_down.png");
+    }
+
+    #[test]
+    fn resize_point_u8_up() {
+        let input = get_u8_test_image();
+        let output = resize::<u8, Point>(
+            &input,
+            ResizeDimensions {
+                width: 2560,
+                height: 1440,
+            },
+            8,
+        )
+        .unwrap();
+        output_image_from_u8(output, "/tmp/video-resize-tests/resize_point_u8_up.png");
+    }
+
+    #[test]
+    fn resize_point_u16_up() {
+        let input = get_u16_test_image();
+        let output = resize::<u16, Point>(
+            &input,
+            ResizeDimensions {
+                width: 2560,
+                height: 1440,
+            },
+            10,
+        )
+        .unwrap();
+        output_image_from_u16(output, "/tmp/video-resize-tests/resize_point_u16_up.png");
+    }
+
+    #[test]
+    fn resize_bilinear_u8_down() {
+        let input = get_u8_test_image();
+        let output = resize::<u8, Bilinear>(
+            &input,
+            ResizeDimensions {
+                width: 1280,
+                height: 720,
+            },
+            8,
+        )
+        .unwrap();
+        output_image_from_u8(
+            output,
+            "/tmp/video-resize-tests/resize_bilinear_u8_down.png",
+        );
+    }
+
+    #[test]
+    fn resize_bilinear_u16_down() {
+        let input = get_u16_test_image();
+        let output = resize::<u16, Bilinear>(
+            &input,
+            ResizeDimensions {
+                width: 1280,
+                height: 720,
+            },
+            10,
+        )
+        .unwrap();
+        output_image_from_u16(
+            output,
+            "/tmp/video-resize-tests/resize_bilinear_u16_down.png",
+        );
+    }
+
+    #[test]
+    fn resize_bilinear_u8_up() {
+        let input = get_u8_test_image();
+        let output = resize::<u8, Bilinear>(
+            &input,
+            ResizeDimensions {
+                width: 2560,
+                height: 1440,
+            },
+            8,
+        )
+        .unwrap();
+        output_image_from_u8(output, "/tmp/video-resize-tests/resize_bilinear_u8_up.png");
+    }
+
+    #[test]
+    fn resize_bilinear_u16_up() {
+        let input = get_u16_test_image();
+        let output = resize::<u16, Bilinear>(
+            &input,
+            ResizeDimensions {
+                width: 2560,
+                height: 1440,
+            },
+            10,
+        )
+        .unwrap();
+        output_image_from_u16(output, "/tmp/video-resize-tests/resize_bilinear_u16_up.png");
+    }
+
+    #[test]
+    fn resize_bicubic_u8_down() {
+        let input = get_u8_test_image();
+        let output = resize::<u8, BicubicCatmullRom>(
+            &input,
+            ResizeDimensions {
+                width: 1280,
+                height: 720,
+            },
+            8,
+        )
+        .unwrap();
+        output_image_from_u8(output, "/tmp/video-resize-tests/resize_bicubic_u8_down.png");
+    }
+
+    #[test]
+    fn resize_bicubic_u16_down() {
+        let input = get_u16_test_image();
+        let output = resize::<u16, BicubicCatmullRom>(
+            &input,
+            ResizeDimensions {
+                width: 1280,
+                height: 720,
+            },
+            10,
+        )
+        .unwrap();
+        output_image_from_u16(
+            output,
+            "/tmp/video-resize-tests/resize_bicubic_u16_down.png",
+        );
+    }
+
+    #[test]
+    fn resize_bicubic_u8_up() {
+        let input = get_u8_test_image();
+        let output = resize::<u8, BicubicCatmullRom>(
+            &input,
+            ResizeDimensions {
+                width: 2560,
+                height: 1440,
+            },
+            8,
+        )
+        .unwrap();
+        output_image_from_u8(output, "/tmp/video-resize-tests/resize_bicubic_u8_up.png");
+    }
+
+    #[test]
+    fn resize_bicubic_u16_up() {
+        let input = get_u16_test_image();
+        let output = resize::<u16, BicubicCatmullRom>(
+            &input,
+            ResizeDimensions {
+                width: 2560,
+                height: 1440,
+            },
+            10,
+        )
+        .unwrap();
+        output_image_from_u16(output, "/tmp/video-resize-tests/resize_bicubic_u16_up.png");
+    }
+
+    #[test]
+    fn resize_lanczos_u8_down() {
+        let input = get_u8_test_image();
+        let output = resize::<u8, Lanczos3>(
+            &input,
+            ResizeDimensions {
+                width: 1280,
+                height: 720,
+            },
+            8,
+        )
+        .unwrap();
+        output_image_from_u8(output, "/tmp/video-resize-tests/resize_lanczos_u8_down.png");
+    }
+
+    #[test]
+    fn resize_lanczos_u16_down() {
+        let input = get_u16_test_image();
+        let output = resize::<u16, Lanczos3>(
+            &input,
+            ResizeDimensions {
+                width: 1280,
+                height: 720,
+            },
+            10,
+        )
+        .unwrap();
+        output_image_from_u16(
+            output,
+            "/tmp/video-resize-tests/resize_lanczos_u16_down.png",
+        );
+    }
+
+    #[test]
+    fn resize_lanczos_u8_up() {
+        let input = get_u8_test_image();
+        let output = resize::<u8, Lanczos3>(
+            &input,
+            ResizeDimensions {
+                width: 2560,
+                height: 1440,
+            },
+            8,
+        )
+        .unwrap();
+        output_image_from_u8(output, "/tmp/video-resize-tests/resize_lanczos_u8_up.png");
+    }
+
+    #[test]
+    fn resize_lanczos_u16_up() {
+        let input = get_u16_test_image();
+        let output = resize::<u16, Lanczos3>(
+            &input,
+            ResizeDimensions {
+                width: 2560,
+                height: 1440,
+            },
+            10,
+        )
+        .unwrap();
+        output_image_from_u16(output, "/tmp/video-resize-tests/resize_lanczos_u16_up.png");
+    }
+
+    #[test]
+    fn resize_spline64_u8_down() {
+        let input = get_u8_test_image();
+        let output = resize::<u8, Spline64>(
+            &input,
+            ResizeDimensions {
+                width: 1280,
+                height: 720,
+            },
+            8,
+        )
+        .unwrap();
+        output_image_from_u8(
+            output,
+            "/tmp/video-resize-tests/resize_spline64_u8_down.png",
+        );
+    }
+
+    #[test]
+    fn resize_spline64_u16_down() {
+        let input = get_u16_test_image();
+        let output = resize::<u16, Spline64>(
+            &input,
+            ResizeDimensions {
+                width: 1280,
+                height: 720,
+            },
+            10,
+        )
+        .unwrap();
+        output_image_from_u16(
+            output,
+            "/tmp/video-resize-tests/resize_spline64_u16_down.png",
+        );
+    }
+
+    #[test]
+    fn resize_spline64_u8_up() {
+        let input = get_u8_test_image();
+        let output = resize::<u8, Spline64>(
+            &input,
+            ResizeDimensions {
+                width: 2560,
+                height: 1440,
+            },
+            8,
+        )
+        .unwrap();
+        output_image_from_u8(output, "/tmp/video-resize-tests/resize_spline64_u8_up.png");
+    }
+
+    #[test]
+    fn resize_spline64_u16_up() {
+        let input = get_u16_test_image();
+        let output = resize::<u16, Spline64>(
+            &input,
+            ResizeDimensions {
+                width: 2560,
+                height: 1440,
+            },
+            10,
+        )
+        .unwrap();
+        output_image_from_u16(output, "/tmp/video-resize-tests/resize_spline64_u16_up.png");
+    }
+}
