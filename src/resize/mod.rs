@@ -1,6 +1,5 @@
 pub mod algorithms;
 
-use nalgebra::DMatrix;
 use std::mem::align_of;
 use v_frame::{
     frame::Frame,
@@ -153,7 +152,11 @@ fn compute_filter<F: ResizeAlgorithm>(
     let support = f64::from(F::support()) / step;
     let filter_size = (support.ceil() as usize * 2).max(1);
     let f = F::new();
-    let mut m: DMatrix<f64> = DMatrix::zeros(dest_dim, src_dim);
+    // This represents a row-major matrix with dest_dim rows and src_dim cols
+    //
+    // TODO: We should be able to represent this as a compressed sparse matrix
+    // to reduce memory usage.
+    let mut m: Vec<f64> = vec![0.0_f64; dest_dim * src_dim];
 
     let src_dim_f = src_dim as f64;
     for i in 0..dest_dim {
@@ -185,18 +188,19 @@ fn compute_filter<F: ResizeAlgorithm>(
             let real_pos = real_pos.max(0.0);
 
             let idx = (real_pos.floor() as usize).min(src_dim - 1);
-            m[(i, idx)] += f.process((xpos - pos) * step) / total;
+            m[i * src_dim + idx] += f.process((xpos - pos) * step) / total;
             left = left.min(idx);
         }
     }
 
-    matrix_to_filter(&m)
+    matrix_to_filter(&m, src_dim)
 }
 
-fn matrix_to_filter(m: &DMatrix<f64>) -> FilterContext {
+fn matrix_to_filter(m: &[f64], input_width: usize) -> FilterContext {
     assert!(!m.is_empty());
 
-    let width = m.row_iter().fold(0, |max, row| {
+    let height = m.len() / input_width;
+    let width = m.chunks(input_width).fold(0, |max, row| {
         let mut first = None;
         let mut last = None;
         for (idx, val) in row.iter().enumerate() {
@@ -222,21 +226,21 @@ fn matrix_to_filter(m: &DMatrix<f64>) -> FilterContext {
     let mut e = FilterContext {
         filter_width: width,
         // TODO: Enable these fields if v_frame ever supports f32 types
-        // filter_rows: m.nrows(),
+        // filter_rows: height,
         // input_width: m.ncols(),
         // stride,
-        // data: vec![0.0; stride * m.nrows()].into_boxed_slice(),
+        // data: vec![0.0; stride * height].into_boxed_slice(),
         stride_i16,
-        data_i16: vec![0; stride_i16 * m.nrows()].into_boxed_slice(),
-        left: vec![0; m.nrows()].into_boxed_slice(),
+        data_i16: vec![0; stride_i16 * height].into_boxed_slice(),
+        left: vec![0; height].into_boxed_slice(),
     };
 
-    for (i, row) in m.row_iter().enumerate() {
+    for (i, row) in m.chunks(input_width).enumerate() {
         let left = row
             .iter()
             .position(|val| *val != 0.0_f64)
             .unwrap()
-            .min(row.ncols() - width);
+            .min(row.len() - width);
         let mut f32_err = 0.0_f64;
         let mut i16_err = 0.0_f64;
         let mut f32_sum = 0.0_f64;

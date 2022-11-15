@@ -12,7 +12,6 @@ rust-version = "1.61.0"
 
 [dependencies]
 anyhow = "1.0.66"
-nalgebra = { version = "0.31.4", default-features = false, features = ["std"] }
 num-traits = "0.2.15"
 v_frame = "0.3.1"
 
