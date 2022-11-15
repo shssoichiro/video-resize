@@ -24,10 +24,10 @@ pub fn resize_horizontal<T: Pixel, F: ResizeAlgorithm>(
     bit_depth: usize,
 ) -> Frame<T> {
     let chroma_sampling = get_chroma_sampling(input);
-    let src_height = input.planes[0].cfg.height;
     let pixel_max = (1i32 << bit_depth) - 1_i32;
 
-    let mut output: Frame<T> = Frame::new_with_padding(dest_width, src_height, chroma_sampling, 0);
+    let mut output: Frame<T> =
+        Frame::new_with_padding(dest_width, input.planes[0].cfg.height, chroma_sampling, 0);
     for p in 0..(if chroma_sampling == ChromaSampling::Cs400 {
         1
     } else {
@@ -41,21 +41,18 @@ pub fn resize_horizontal<T: Pixel, F: ResizeAlgorithm>(
             .rows_iter()
             .zip(output.planes[p].rows_iter_mut())
         {
-            // SAFETY: We know the bounds of the frame, so we are not worried about exceeding it
-            unsafe {
-                for j in 0..dest_width {
-                    let top = *filter.left.get_unchecked(j);
-                    let mut accum = 0i32;
+            #[allow(clippy::needless_range_loop)]
+            for j in 0..dest_width {
+                let top = filter.left[j];
+                let mut accum = 0i32;
 
-                    for k in 0..filter.filter_width {
-                        let coeff =
-                            i32::from(*filter.data_i16.get_unchecked(j * filter.stride_i16 + k));
-                        let x = unpack_pixel_u16(in_row.get_unchecked(top + k).to_u16().unwrap());
-                        accum += coeff * x;
-                    }
-
-                    *out_row.get_unchecked_mut(j) = T::cast_from(pack_pixel_u16(accum, pixel_max));
+                for k in 0..filter.filter_width {
+                    let coeff = i32::from(filter.data_i16[j * filter.stride_i16 + k]);
+                    let x = unpack_pixel_u16(in_row[top + k].to_u16().unwrap());
+                    accum += coeff * x;
                 }
+
+                out_row[j] = T::cast_from(pack_pixel_u16(accum, pixel_max));
             }
         }
     }
@@ -68,10 +65,10 @@ pub fn resize_vertical<T: Pixel, F: ResizeAlgorithm>(
     bit_depth: usize,
 ) -> Frame<T> {
     let chroma_sampling = get_chroma_sampling(input);
-    let src_width = input.planes[0].cfg.width;
     let pixel_max = (1i32 << bit_depth) - 1_i32;
 
-    let mut output: Frame<T> = Frame::new_with_padding(src_width, dest_height, chroma_sampling, 0);
+    let mut output: Frame<T> =
+        Frame::new_with_padding(input.planes[0].cfg.width, dest_height, chroma_sampling, 0);
     for p in 0..(if chroma_sampling == ChromaSampling::Cs400 {
         1
     } else {
@@ -79,37 +76,28 @@ pub fn resize_vertical<T: Pixel, F: ResizeAlgorithm>(
     }) {
         let src_height = input.planes[p].cfg.height;
         let dest_height = output.planes[p].cfg.height;
+        let src_width = input.planes[p].cfg.width;
         let src_stride = input.planes[p].cfg.stride;
         let dest_stride = output.planes[p].cfg.stride;
+        let input_data = input.planes[p].data_origin();
+        let output_data = output.planes[p].data_origin_mut();
         let filter = compute_filter::<F>(src_height, dest_height, 0.0, src_height as f64);
 
-        for (i, (in_row, out_row)) in input.planes[p]
-            .rows_iter()
-            .zip(output.planes[p].rows_iter_mut())
-            .enumerate()
-        {
-            // SAFETY: We know the bounds of the frame, so we are not worried about exceeding it
-            unsafe {
-                let filter_coeffs = &filter.data_i16[(i * filter.stride_i16)..];
-                let top = *filter.left.get_unchecked(i);
+        for i in 0..dest_height {
+            let filter_coeffs = &filter.data_i16[(i * filter.stride_i16)..];
+            let top = filter.left[i];
 
-                for j in 0..src_width {
-                    let mut accum = 0i32;
+            for j in 0..src_width {
+                let mut accum = 0i32;
 
-                    for k in 0..filter.filter_width {
-                        let coeff = i32::from(*filter_coeffs.get_unchecked(k));
-                        let x = unpack_pixel_u16(
-                            in_row
-                                .get_unchecked((top + k) * src_stride + j)
-                                .to_u16()
-                                .unwrap(),
-                        );
-                        accum += coeff * x;
-                    }
-
-                    *out_row.get_unchecked_mut(i * dest_stride + j) =
-                        T::cast_from(pack_pixel_u16(accum, pixel_max));
+                for k in 0..filter.filter_width {
+                    let coeff = i32::from(filter_coeffs[k]);
+                    let x =
+                        unpack_pixel_u16(input_data[(top + k) * src_stride + j].to_u16().unwrap());
+                    accum += coeff * x;
                 }
+
+                output_data[i * dest_stride + j] = T::cast_from(pack_pixel_u16(accum, pixel_max));
             }
         }
     }
@@ -197,10 +185,7 @@ fn compute_filter<F: ResizeAlgorithm>(
             let real_pos = real_pos.max(0.0);
 
             let idx = (real_pos.floor() as usize).min(src_dim - 1);
-            // SAFETY: We know the bounds of this matrix and will not exceed it
-            unsafe {
-                *m.get_unchecked_mut((i, idx)) += f.process((xpos - pos) * step) / total;
-            }
+            m[(i, idx)] += f.process((xpos - pos) * step) / total;
             left = left.min(idx);
         }
     }
@@ -259,52 +244,46 @@ fn matrix_to_filter(m: &DMatrix<f64>) -> FilterContext {
         let mut i16_greatest = 0_i16;
         let mut i16_greatest_idx = 0usize;
 
-        // SAFETY: We know the bounds of the data structures we are dealing with,
-        // and we do not go outside them.
-        unsafe {
-            // Dither filter coefficients when rounding them to their storage format.
-            // This minimizes accumulation of error and ensures that the filter
-            // continues to sum as close to 1.0 as possible after rounding.
-            for j in 0..width {
-                let coeff = *row.get_unchecked(left + j);
+        // Dither filter coefficients when rounding them to their storage format.
+        // This minimizes accumulation of error and ensures that the filter
+        // continues to sum as close to 1.0 as possible after rounding.
+        for j in 0..width {
+            let coeff = row[left + j];
 
-                let coeff_expected_f32 = coeff - f32_err;
-                let coeff_expected_i16 = coeff.mul_add(f64::from(1i16 << 14usize), -i16_err);
+            let coeff_expected_f32 = coeff - f32_err;
+            let coeff_expected_i16 = coeff.mul_add(f64::from(1i16 << 14usize), -i16_err);
 
-                let coeff_f32 = coeff_expected_f32 as f32;
-                let coeff_i16 = coeff_expected_i16.round() as i16;
+            let coeff_f32 = coeff_expected_f32 as f32;
+            let coeff_i16 = coeff_expected_i16.round() as i16;
 
-                f32_err = coeff_expected_f32 as f64 - coeff_expected_f32;
-                i16_err = coeff_expected_i16 as f64 - coeff_expected_i16;
+            f32_err = coeff_expected_f32 as f64 - coeff_expected_f32;
+            i16_err = coeff_expected_i16 as f64 - coeff_expected_i16;
 
-                if coeff_i16.abs() > i16_greatest {
-                    i16_greatest = coeff_i16;
-                    i16_greatest_idx = j;
-                }
-
-                f32_sum += f64::from(coeff_f32);
-                i16_sum += coeff_i16;
-
-                // TODO: Enable this code if v_frame ever supports f32 types
-                // *e.data.get_unchecked_mut(i * stride + j) = coeff_f32;
-                *e.data_i16.get_unchecked_mut(i * stride_i16 + j) = coeff_i16;
+            if coeff_i16.abs() > i16_greatest {
+                i16_greatest = coeff_i16;
+                i16_greatest_idx = j;
             }
 
-            /* The final sum may still be off by a few ULP. This can not be fixed for
-             * floating point data, since the error is dependent on summation order,
-             * but for integer data, the error can be added to the greatest coefficient.
-             */
-            debug_assert!(
-                1.0_f64 - f32_sum <= f64::from(f32::EPSILON),
-                "error too great"
-            );
-            debug_assert!((1i16 << 14usize) - i16_sum <= 1, "error too great");
+            f32_sum += f64::from(coeff_f32);
+            i16_sum += coeff_i16;
 
-            *e.data_i16
-                .get_unchecked_mut(i * e.stride_i16 + i16_greatest_idx) +=
-                (1i16 << 14usize) - i16_sum;
-            *e.left.get_unchecked_mut(i) = left;
+            // TODO: Enable this code if v_frame ever supports f32 types
+            // e.data[i * stride + j] = coeff_f32;
+            e.data_i16[i * stride_i16 + j] = coeff_i16;
         }
+
+        /* The final sum may still be off by a few ULP. This can not be fixed for
+         * floating point data, since the error is dependent on summation order,
+         * but for integer data, the error can be added to the greatest coefficient.
+         */
+        debug_assert!(
+            1.0_f64 - f32_sum <= f64::from(f32::EPSILON),
+            "error too great"
+        );
+        debug_assert!((1i16 << 14usize) - i16_sum <= 1, "error too great");
+
+        e.data_i16[i * e.stride_i16 + i16_greatest_idx] += (1i16 << 14usize) - i16_sum;
+        e.left[i] = left;
     }
 
     e
