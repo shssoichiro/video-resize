@@ -188,7 +188,10 @@ fn compute_filter<F: ResizeAlgorithm>(
             let real_pos = real_pos.max(0.0);
 
             let idx = (real_pos.floor() as usize).min(src_dim - 1);
-            m[i * src_dim + idx] += f.process((xpos - pos) * step) / total;
+            // SAFETY: We control the size and bounds
+            unsafe {
+                *m.get_unchecked_mut(i * src_dim + idx) += f.process((xpos - pos) * step) / total;
+            }
             left = left.min(idx);
         }
     }
