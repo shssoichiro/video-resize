@@ -200,7 +200,7 @@ fn matrix_to_filter(m: &[f64], input_width: usize) -> FilterContext {
     assert!(!m.is_empty());
 
     let height = m.len() / input_width;
-    let width = m.chunks(input_width).fold(0, |max, row| {
+    let width = m.chunks_exact(input_width).fold(0, |max, row| {
         let mut first = None;
         let mut last = None;
         for (idx, val) in row.iter().enumerate() {
@@ -235,7 +235,7 @@ fn matrix_to_filter(m: &[f64], input_width: usize) -> FilterContext {
         left: vec![0; height].into_boxed_slice(),
     };
 
-    for (i, row) in m.chunks(input_width).enumerate() {
+    for (i, row) in m.chunks_exact(input_width).enumerate() {
         let left = row
             .iter()
             .position(|val| *val != 0.0_f64)
@@ -252,28 +252,31 @@ fn matrix_to_filter(m: &[f64], input_width: usize) -> FilterContext {
         // This minimizes accumulation of error and ensures that the filter
         // continues to sum as close to 1.0 as possible after rounding.
         for j in 0..width {
-            let coeff = row[left + j];
+            // SAFETY: We control the size and bounds
+            unsafe {
+                let coeff = *row.get_unchecked(left + j);
 
-            let coeff_expected_f32 = coeff - f32_err;
-            let coeff_expected_i16 = coeff.mul_add(f64::from(1i16 << 14usize), -i16_err);
+                let coeff_expected_f32 = coeff - f32_err;
+                let coeff_expected_i16 = coeff.mul_add(f64::from(1i16 << 14usize), -i16_err);
 
-            let coeff_f32 = coeff_expected_f32 as f32;
-            let coeff_i16 = coeff_expected_i16.round() as i16;
+                let coeff_f32 = coeff_expected_f32 as f32;
+                let coeff_i16 = coeff_expected_i16.round() as i16;
 
-            f32_err = coeff_expected_f32 as f64 - coeff_expected_f32;
-            i16_err = coeff_expected_i16 as f64 - coeff_expected_i16;
+                f32_err = coeff_expected_f32 as f64 - coeff_expected_f32;
+                i16_err = coeff_expected_i16 as f64 - coeff_expected_i16;
 
-            if coeff_i16.abs() > i16_greatest {
-                i16_greatest = coeff_i16;
-                i16_greatest_idx = j;
+                if coeff_i16.abs() > i16_greatest {
+                    i16_greatest = coeff_i16;
+                    i16_greatest_idx = j;
+                }
+
+                f32_sum += f64::from(coeff_f32);
+                i16_sum += coeff_i16;
+
+                // TODO: Enable this code if v_frame ever supports f32 types
+                // *e.data.get_unchecked_mut(i * stride + j) = coeff_f32;
+                *e.data_i16.get_unchecked_mut(i * stride_i16 + j) = coeff_i16;
             }
-
-            f32_sum += f64::from(coeff_f32);
-            i16_sum += coeff_i16;
-
-            // TODO: Enable this code if v_frame ever supports f32 types
-            // e.data[i * stride + j] = coeff_f32;
-            e.data_i16[i * stride_i16 + j] = coeff_i16;
         }
 
         /* The final sum may still be off by a few ULP. This can not be fixed for
@@ -286,8 +289,13 @@ fn matrix_to_filter(m: &[f64], input_width: usize) -> FilterContext {
         );
         debug_assert!((1i16 << 14usize) - i16_sum <= 1, "error too great");
 
-        e.data_i16[i * e.stride_i16 + i16_greatest_idx] += (1i16 << 14usize) - i16_sum;
-        e.left[i] = left;
+        // SAFETY: We control the size and bounds
+        unsafe {
+            *e.data_i16
+                .get_unchecked_mut(i * e.stride_i16 + i16_greatest_idx) +=
+                (1i16 << 14usize) - i16_sum;
+            *e.left.get_unchecked_mut(i) = left;
+        }
     }
 
     e
