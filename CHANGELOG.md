@@ -1,4 +1,4 @@
-## Next version (git main)
+## Version 0.1.1
 
 - Performance improvements for resize
 - Remove nalgebra dependency
