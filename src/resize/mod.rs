@@ -40,18 +40,22 @@ pub fn resize_horizontal<T: Pixel, F: ResizeAlgorithm>(
             .rows_iter()
             .zip(output.planes[p].rows_iter_mut())
         {
-            #[allow(clippy::needless_range_loop)]
-            for j in 0..dest_width {
-                let top = filter.left[j];
-                let mut accum = 0i32;
+            // SAFETY: We control the size and bounds
+            unsafe {
+                #[allow(clippy::needless_range_loop)]
+                for j in 0..dest_width {
+                    let top = *filter.left.get_unchecked(j);
+                    let mut accum = 0i32;
 
-                for k in 0..filter.filter_width {
-                    let coeff = i32::from(filter.data_i16[j * filter.stride_i16 + k]);
-                    let x = unpack_pixel_u16(in_row[top + k].to_u16().unwrap());
-                    accum += coeff * x;
+                    for k in 0..filter.filter_width {
+                        let coeff =
+                            i32::from(*filter.data_i16.get_unchecked(j * filter.stride_i16 + k));
+                        let x = unpack_pixel_u16(in_row.get_unchecked(top + k).to_u16().unwrap());
+                        accum += coeff * x;
+                    }
+
+                    *out_row.get_unchecked_mut(j) = T::cast_from(pack_pixel_u16(accum, pixel_max));
                 }
-
-                out_row[j] = T::cast_from(pack_pixel_u16(accum, pixel_max));
             }
         }
     }
@@ -83,20 +87,28 @@ pub fn resize_vertical<T: Pixel, F: ResizeAlgorithm>(
         let filter = compute_filter::<F>(src_height, dest_height, 0.0, src_height as f64);
 
         for i in 0..dest_height {
-            let filter_coeffs = &filter.data_i16[(i * filter.stride_i16)..];
-            let top = filter.left[i];
+            // SAFETY: We control the size and bounds
+            unsafe {
+                let filter_coeffs = filter.data_i16.as_ptr().add(i * filter.stride_i16);
+                let top = *filter.left.get_unchecked(i);
 
-            for j in 0..src_width {
-                let mut accum = 0i32;
+                for j in 0..src_width {
+                    let mut accum = 0i32;
 
-                for k in 0..filter.filter_width {
-                    let coeff = i32::from(filter_coeffs[k]);
-                    let x =
-                        unpack_pixel_u16(input_data[(top + k) * src_stride + j].to_u16().unwrap());
-                    accum += coeff * x;
+                    for k in 0..filter.filter_width {
+                        let coeff = i32::from(*filter_coeffs.add(k));
+                        let x = unpack_pixel_u16(
+                            input_data
+                                .get_unchecked((top + k) * src_stride + j)
+                                .to_u16()
+                                .unwrap(),
+                        );
+                        accum += coeff * x;
+                    }
+
+                    *output_data.get_unchecked_mut(i * dest_stride + j) =
+                        T::cast_from(pack_pixel_u16(accum, pixel_max));
                 }
-
-                output_data[i * dest_stride + j] = T::cast_from(pack_pixel_u16(accum, pixel_max));
             }
         }
     }
