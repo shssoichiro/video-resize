@@ -1,20 +1,20 @@
 [package]
 name = "video-resize"
-version = "0.1.1"
-edition = "2021"
+version = "0.2.0"
+edition = "2024"
 license = "MIT"
 description = "Video crop and resize library in Rust, for use with the rav1e/v_frame ecosystem"
 repository = "https://github.com/shssoichiro/video-resize"
 documentation = "https://docs.rs/video-resize"
 exclude = ["test_files"]
-rust-version = "1.56.1"
+rust-version = "1.85"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 anyhow = "1.0.66"
 num-traits = "0.2.15"
-v_frame = "0.3.1"
+v_frame = { version = "0.5.1", features = ["padding_api"] }
 
 [features]
 default = []
@@ -22,8 +22,8 @@ default = []
 devel = []
 
 [dev-dependencies]
-image = { version = "0.24.5", default-features = false, features = ["png"] }
-yuvxyb = "0.2.3"
+image = { version = "0.25.9", default-features = false, features = ["png"] }
+yuvxyb = "0.5"
 
 [profile.dev]
 opt-level = 2

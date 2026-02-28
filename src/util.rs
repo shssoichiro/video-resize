@@ -1,22 +1,4 @@
 use num_traits::{FromPrimitive, PrimInt};
-use v_frame::{
-    frame::Frame,
-    prelude::{ChromaSampling, Pixel},
-};
-
-#[inline]
-pub fn get_chroma_sampling<T: Pixel>(input: &Frame<T>) -> ChromaSampling {
-    if input.planes[1].cfg.width == 0 {
-        ChromaSampling::Cs400
-    } else {
-        match input.planes[1].cfg.xdec + input.planes[1].cfg.ydec {
-            2 => ChromaSampling::Cs420,
-            1 => ChromaSampling::Cs422,
-            0 => ChromaSampling::Cs444,
-            _ => unreachable!(),
-        }
-    }
-}
 
 #[inline(always)]
 pub fn round_halfup(x: f64) -> f64 {

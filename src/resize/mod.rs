@@ -1,12 +1,17 @@
 pub mod algorithms;
 
-use std::mem::align_of;
+use anyhow::Result;
+use std::{
+    mem::align_of,
+    num::{NonZeroU8, NonZeroUsize},
+};
 use v_frame::{
-    frame::Frame,
-    prelude::{ChromaSampling, Pixel},
+    chroma::ChromaSubsampling,
+    frame::{Frame, FrameBuilder},
+    pixel::Pixel,
 };
 
-use crate::util::{ceil_n, get_chroma_sampling, round_halfup};
+use crate::util::{ceil_n, round_halfup};
 
 pub fn should_resize_horiz_first(width_ratio: f32, height_ratio: f32) -> bool {
     let horiz_first_cost = width_ratio
@@ -19,31 +24,34 @@ pub fn should_resize_horiz_first(width_ratio: f32, height_ratio: f32) -> bool {
 
 pub fn resize_horizontal<T: Pixel, F: ResizeAlgorithm>(
     input: &Frame<T>,
-    dest_width: usize,
-    bit_depth: usize,
-) -> Frame<T> {
-    let chroma_sampling = get_chroma_sampling(input);
-    let pixel_max = (1i32 << bit_depth) - 1_i32;
+    dest_width: NonZeroUsize,
+    bit_depth: NonZeroU8,
+) -> Result<Frame<T>> {
+    let pixel_max = (1i32 << bit_depth.get()) - 1_i32;
 
-    let mut output: Frame<T> =
-        Frame::new_with_padding(dest_width, input.planes[0].cfg.height, chroma_sampling, 0);
-    for p in 0..(if chroma_sampling == ChromaSampling::Cs400 {
+    let mut output: Frame<T> = FrameBuilder::new(
+        dest_width,
+        input.y_plane.height(),
+        input.subsampling,
+        bit_depth,
+    )
+    .build()?;
+    for p in 0..(if input.subsampling == ChromaSubsampling::Monochrome {
         1
     } else {
         3
     }) {
-        let src_width = input.planes[p].cfg.width;
-        let dest_width = output.planes[p].cfg.width;
-        let filter = compute_filter::<F>(src_width, dest_width, 0.0, src_width as f64);
+        let input_plane = input.plane(p).expect("has plane");
+        let output_plane = output.plane_mut(p).expect("has plane");
+        let src_width = input_plane.width();
+        let dest_width = output_plane.width();
+        let filter = compute_filter::<F>(src_width, dest_width, src_width);
 
-        for (in_row, out_row) in input.planes[p]
-            .rows_iter()
-            .zip(output.planes[p].rows_iter_mut())
-        {
+        for (in_row, out_row) in input_plane.rows().zip(output_plane.rows_mut()) {
             // SAFETY: We control the size and bounds
             unsafe {
                 #[allow(clippy::needless_range_loop)]
-                for j in 0..dest_width {
+                for j in 0..dest_width.get() {
                     let top = *filter.left.get_unchecked(j);
                     let mut accum = 0i32;
 
@@ -54,65 +62,80 @@ pub fn resize_horizontal<T: Pixel, F: ResizeAlgorithm>(
                         accum += coeff * x;
                     }
 
-                    *out_row.get_unchecked_mut(j) = T::cast_from(pack_pixel_u16(accum, pixel_max));
+                    *out_row.get_unchecked_mut(j) = match size_of::<T>() {
+                        1 => T::from(pack_pixel_u16(accum, pixel_max) as u8).expect("T is u8"),
+                        2 => T::from(pack_pixel_u16(accum, pixel_max)).expect("T is u16"),
+                        _ => unreachable!(),
+                    };
                 }
             }
         }
     }
-    output
+    Ok(output)
 }
 
 pub fn resize_vertical<T: Pixel, F: ResizeAlgorithm>(
     input: &Frame<T>,
-    dest_height: usize,
-    bit_depth: usize,
-) -> Frame<T> {
-    let chroma_sampling = get_chroma_sampling(input);
-    let pixel_max = (1i32 << bit_depth) - 1_i32;
+    dest_height: NonZeroUsize,
+    bit_depth: NonZeroU8,
+) -> Result<Frame<T>> {
+    let pixel_max = (1i32 << bit_depth.get()) - 1_i32;
 
-    let mut output: Frame<T> =
-        Frame::new_with_padding(input.planes[0].cfg.width, dest_height, chroma_sampling, 0);
-    for p in 0..(if chroma_sampling == ChromaSampling::Cs400 {
+    let mut output: Frame<T> = FrameBuilder::new(
+        input.y_plane.width(),
+        dest_height,
+        input.subsampling,
+        bit_depth,
+    )
+    .build()?;
+    for p in 0..(if input.subsampling == ChromaSubsampling::Monochrome {
         1
     } else {
         3
     }) {
-        let src_height = input.planes[p].cfg.height;
-        let dest_height = output.planes[p].cfg.height;
-        let src_width = input.planes[p].cfg.width;
-        let src_stride = input.planes[p].cfg.stride;
-        let dest_stride = output.planes[p].cfg.stride;
-        let input_data = input.planes[p].data_origin();
-        let output_data = output.planes[p].data_origin_mut();
-        let filter = compute_filter::<F>(src_height, dest_height, 0.0, src_height as f64);
+        let input_plane = input.plane(p).expect("plane exists");
+        let output_plane = output.plane_mut(p).expect("plane exists");
+        let src_height = input_plane.height();
+        let dest_height = output_plane.height();
+        let src_width = input_plane.width();
+        let src_stride = input_plane.geometry().stride;
+        let dest_stride = output_plane.geometry().stride;
+        let input_data = &input_plane.data()[input_plane.data_origin()..];
+        let out_origin = output_plane.data_origin();
+        let output_data = &mut output_plane.data_mut()[out_origin..];
+        let filter = compute_filter::<F>(src_height, dest_height, src_height);
 
-        for i in 0..dest_height {
+        for i in 0..dest_height.get() {
             // SAFETY: We control the size and bounds
             unsafe {
                 let filter_coeffs = filter.data_i16.as_ptr().add(i * filter.stride_i16);
                 let top = *filter.left.get_unchecked(i);
 
-                for j in 0..src_width {
+                for j in 0..src_width.get() {
                     let mut accum = 0i32;
 
                     for k in 0..filter.filter_width {
                         let coeff = i32::from(*filter_coeffs.add(k));
                         let x = unpack_pixel_u16(
                             input_data
-                                .get_unchecked((top + k) * src_stride + j)
+                                .get_unchecked((top + k) * src_stride.get() + j)
                                 .to_u16()
                                 .unwrap(),
                         );
                         accum += coeff * x;
                     }
 
-                    *output_data.get_unchecked_mut(i * dest_stride + j) =
-                        T::cast_from(pack_pixel_u16(accum, pixel_max));
+                    *output_data.get_unchecked_mut(i * dest_stride.get() + j) = match size_of::<T>()
+                    {
+                        1 => T::from(pack_pixel_u16(accum, pixel_max) as u8).expect("T is u8"),
+                        2 => T::from(pack_pixel_u16(accum, pixel_max)).expect("T is u16"),
+                        _ => unreachable!(),
+                    };
                 }
             }
         }
     }
-    output
+    Ok(output)
 }
 
 #[inline(always)]
@@ -131,8 +154,8 @@ fn pack_pixel_u16(x: i32, pixel_max: i32) -> u16 {
 /// Specifies the target resolution for the resized image.
 #[derive(Debug, Clone, Copy)]
 pub struct ResizeDimensions {
-    pub width: usize,
-    pub height: usize,
+    pub width: NonZeroUsize,
+    pub height: NonZeroUsize,
 }
 
 pub trait ResizeAlgorithm {
@@ -154,12 +177,11 @@ struct FilterContext {
 }
 
 fn compute_filter<F: ResizeAlgorithm>(
-    src_dim: usize,
-    dest_dim: usize,
-    shift: f64,
-    width: f64,
+    src_dim: NonZeroUsize,
+    dest_dim: NonZeroUsize,
+    width: NonZeroUsize,
 ) -> FilterContext {
-    let scale = dest_dim as f64 / width;
+    let scale = dest_dim.get() as f64 / width.get() as f64;
     let step = scale.min(1.0);
     let support = f64::from(F::support()) / step;
     let filter_size = (support.ceil() as usize * 2).max(1);
@@ -168,12 +190,12 @@ fn compute_filter<F: ResizeAlgorithm>(
     //
     // TODO: We should be able to represent this as a compressed sparse matrix
     // to reduce memory usage.
-    let mut m: Vec<f64> = vec![0.0_f64; dest_dim * src_dim];
+    let mut m: Vec<f64> = vec![0.0_f64; dest_dim.get() * src_dim.get()];
 
-    let src_dim_f = src_dim as f64;
-    for i in 0..dest_dim {
+    let src_dim_f = src_dim.get() as f64;
+    for i in 0..dest_dim.get() {
         // Position of output sample on input grid.
-        let pos = (i as f64 + 0.5_f64) / scale + shift;
+        let pos = (i as f64 + 0.5_f64) / scale;
         let begin_pos = round_halfup((filter_size as f64).mul_add(-0.5, pos)) + 0.5_f64;
 
         let mut total = 0.0_f64;
@@ -199,10 +221,11 @@ fn compute_filter<F: ResizeAlgorithm>(
             // Clamp the position if it is still out of bounds.
             let real_pos = real_pos.max(0.0);
 
-            let idx = (real_pos.floor() as usize).min(src_dim - 1);
+            let idx = (real_pos.floor() as usize).min(src_dim.get() - 1);
             // SAFETY: We control the size and bounds
             unsafe {
-                *m.get_unchecked_mut(i * src_dim + idx) += f.process((xpos - pos) * step) / total;
+                *m.get_unchecked_mut(i * src_dim.get() + idx) +=
+                    f.process((xpos - pos) * step) / total;
             }
             left = left.min(idx);
         }
@@ -211,11 +234,11 @@ fn compute_filter<F: ResizeAlgorithm>(
     matrix_to_filter(&m, src_dim)
 }
 
-fn matrix_to_filter(m: &[f64], input_width: usize) -> FilterContext {
+fn matrix_to_filter(m: &[f64], input_width: NonZeroUsize) -> FilterContext {
     assert!(!m.is_empty());
 
     let height = m.len() / input_width;
-    let width = m.chunks_exact(input_width).fold(0, |max, row| {
+    let width = m.chunks_exact(input_width.get()).fold(0, |max, row| {
         let mut first = None;
         let mut last = None;
         for (idx, val) in row.iter().enumerate() {
@@ -250,7 +273,7 @@ fn matrix_to_filter(m: &[f64], input_width: usize) -> FilterContext {
         left: vec![0; height].into_boxed_slice(),
     };
 
-    for (i, row) in m.chunks_exact(input_width).enumerate() {
+    for (i, row) in m.chunks_exact(input_width.get()).enumerate() {
         let left = row
             .iter()
             .position(|val| *val != 0.0_f64)
@@ -277,8 +300,11 @@ fn matrix_to_filter(m: &[f64], input_width: usize) -> FilterContext {
                 let coeff_f32 = coeff_expected_f32 as f32;
                 let coeff_i16 = coeff_expected_i16.round() as i16;
 
-                f32_err = coeff_expected_f32 as f64 - coeff_expected_f32;
-                i16_err = coeff_expected_i16 as f64 - coeff_expected_i16;
+                #[allow(clippy::unnecessary_cast)]
+                {
+                    f32_err = coeff_expected_f32 as f64 - coeff_expected_f32;
+                    i16_err = coeff_expected_i16 as f64 - coeff_expected_i16;
+                }
 
                 if coeff_i16.abs() > i16_greatest {
                     i16_greatest = coeff_i16;

@@ -8,6 +8,7 @@
 #![allow(clippy::default_trait_access)]
 #![allow(clippy::inconsistent_struct_constructor)]
 #![allow(clippy::inline_always)]
+#![allow(clippy::missing_panics_doc)]
 #![allow(clippy::module_name_repetitions)]
 #![allow(clippy::redundant_closure_for_method_calls)]
 #![allow(clippy::similar_names)]
@@ -31,7 +32,6 @@
 #![warn(clippy::rest_pat_in_fully_bound_structs)]
 #![warn(clippy::same_name_method)]
 #![warn(clippy::str_to_string)]
-#![warn(clippy::string_to_string)]
 #![warn(clippy::undocumented_unsafe_blocks)]
 #![warn(clippy::unnecessary_self_imports)]
 #![warn(clippy::unneeded_field_pattern)]
@@ -41,17 +41,18 @@
 mod resize;
 mod util;
 
-use std::mem::size_of;
-
-pub use crate::resize::{algorithms, ResizeAlgorithm, ResizeDimensions};
-use crate::{
-    resize::{resize_horizontal, resize_vertical, should_resize_horiz_first},
-    util::get_chroma_sampling,
+use std::{
+    mem::size_of,
+    num::{NonZeroU8, NonZeroUsize},
 };
-use anyhow::{ensure, Result};
+
+pub use crate::resize::{ResizeAlgorithm, ResizeDimensions, algorithms};
+use crate::resize::{resize_horizontal, resize_vertical, should_resize_horiz_first};
+use anyhow::{Result, ensure};
 use v_frame::{
-    frame::Frame,
-    prelude::{ChromaSampling, Pixel},
+    chroma::ChromaSubsampling,
+    frame::{Frame, FrameBuilder},
+    pixel::Pixel,
 };
 
 /// Specifies the number of pixels to crop off of each side of the image.
@@ -77,32 +78,44 @@ pub fn crop<T: Pixel>(input: &Frame<T>, dimensions: CropDimensions) -> Result<Fr
         "Crop dimensions must be a multiple of 2"
     );
     ensure!(
-        dimensions.left + dimensions.right <= input.planes[0].cfg.width + 4,
+        dimensions.left + dimensions.right <= input.y_plane.width().get() + 4,
         "Resulting width must be at least 4 pixels"
     );
     ensure!(
-        dimensions.top + dimensions.bottom <= input.planes[0].cfg.height + 4,
+        dimensions.top + dimensions.bottom <= input.y_plane.height().get() + 4,
         "Resulting height must be at least 4 pixels"
     );
 
-    let new_w = input.planes[0].cfg.width - dimensions.left - dimensions.right;
-    let new_h = input.planes[0].cfg.height - dimensions.top - dimensions.bottom;
-    let chroma_sampling = get_chroma_sampling(input);
-    let mut output: Frame<T> = Frame::new_with_padding(new_w, new_h, chroma_sampling, 0);
-    for p in 0..(if chroma_sampling == ChromaSampling::Cs400 {
+    // SAFETY: checked above
+    let new_w = unsafe {
+        NonZeroUsize::new_unchecked(
+            input.y_plane.width().get() - dimensions.left - dimensions.right,
+        )
+    };
+    // SAFETY: checked above
+    let new_h = unsafe {
+        NonZeroUsize::new_unchecked(
+            input.y_plane.height().get() - dimensions.top - dimensions.bottom,
+        )
+    };
+    let mut output: Frame<T> =
+        FrameBuilder::new(new_w, new_h, input.subsampling, input.bit_depth).build()?;
+    for p in 0..(if input.subsampling == ChromaSubsampling::Monochrome {
         1
     } else {
         3
     }) {
-        let plane_cfg = &input.planes[p].cfg;
-        let new_w = new_w >> plane_cfg.xdec;
-        let new_h = new_h >> plane_cfg.ydec;
-        let left = dimensions.left >> plane_cfg.xdec;
-        let top = dimensions.top >> plane_cfg.ydec;
+        let input_plane = input.plane(p).expect("plane exists");
+        let output_plane = output.plane_mut(p).expect("plane exists");
+        let plane_cfg = &input_plane.geometry();
+        let new_w = new_w.get() / plane_cfg.subsampling_x.get() as usize;
+        let new_h = new_h.get() / plane_cfg.subsampling_y.get() as usize;
+        let left = dimensions.left / plane_cfg.subsampling_x.get() as usize;
+        let top = dimensions.top / plane_cfg.subsampling_y.get() as usize;
 
-        for (out_row, in_row) in output.planes[p]
-            .rows_iter_mut()
-            .zip(input.planes[p].rows_iter().skip(top).take(new_h))
+        for (out_row, in_row) in output_plane
+            .rows_mut()
+            .zip(input_plane.rows().skip(top).take(new_h))
         {
             // SAFETY: `Frame` ensures that certain variants are upheld.
             // Given that we have verified the crop dimensions do not exceed
@@ -139,68 +152,56 @@ pub fn crop_u16(input: &Frame<u16>, dimensions: CropDimensions) -> Result<Frame<
 pub fn resize<T: Pixel, F: ResizeAlgorithm>(
     input: &Frame<T>,
     dimensions: ResizeDimensions,
-    input_bit_depth: usize,
+    input_bit_depth: NonZeroU8,
 ) -> Result<Frame<T>> {
     if size_of::<T>() == 1 {
         ensure!(
-            input_bit_depth == 8,
+            input_bit_depth.get() == 8,
             "input bit depth must be 8 for 8-bit pixel type"
         );
     } else if size_of::<T>() == 2 {
         ensure!(
-            input_bit_depth > 8 && input_bit_depth <= 16,
+            input_bit_depth.get() > 8 && input_bit_depth.get() <= 16,
             "input bit depth must be between 9-16 for 8-bit pixel type"
         );
     } else {
         unreachable!("32-bit types not implemented in v_frame");
     }
+    let (ss_x, ss_y) = input
+        .subsampling
+        .subsample_ratio()
+        .map_or((1, 1), |(x, y)| (x.get() as usize, y.get() as usize));
     ensure!(
-        dimensions.width % 2 == 0 && dimensions.height % 2 == 0,
-        "Resize dimensions must be a multiple of 2"
+        dimensions.width.get() % ss_x == 0 && dimensions.height.get() % ss_y == 0,
+        "Resize dimensions must be a multiple of subsampling ratio"
     );
     ensure!(
-        dimensions.width >= 4 && dimensions.height >= 4,
+        dimensions.width.get() >= 4 && dimensions.height.get() >= 4,
         "Resulting image must be at least 4x4 pixels"
     );
 
-    let src_w = input.planes[0].cfg.width;
-    let src_h = input.planes[0].cfg.height;
+    let src_w = input.y_plane.width();
+    let src_h = input.y_plane.height();
     let resize_horiz = src_w != dimensions.width;
     let resize_vert = src_h != dimensions.height;
     if !resize_horiz {
-        return Ok(resize_vertical::<T, F>(
-            input,
-            dimensions.height,
-            input_bit_depth,
-        ));
+        return resize_vertical::<T, F>(input, dimensions.height, input_bit_depth);
     }
 
     if !resize_vert {
-        return Ok(resize_horizontal::<T, F>(
-            input,
-            dimensions.width,
-            input_bit_depth,
-        ));
+        return resize_horizontal::<T, F>(input, dimensions.width, input_bit_depth);
     }
 
     let horiz_first = should_resize_horiz_first(
-        dimensions.width as f32 / src_w as f32,
-        dimensions.height as f32 / src_h as f32,
+        dimensions.width.get() as f32 / src_w.get() as f32,
+        dimensions.height.get() as f32 / src_h.get() as f32,
     );
     if horiz_first {
-        let temp = resize_horizontal::<T, F>(input, dimensions.width, input_bit_depth);
-        return Ok(resize_vertical::<T, F>(
-            &temp,
-            dimensions.height,
-            input_bit_depth,
-        ));
+        let temp = resize_horizontal::<T, F>(input, dimensions.width, input_bit_depth)?;
+        return resize_vertical::<T, F>(&temp, dimensions.height, input_bit_depth);
     }
-    let temp = resize_vertical::<T, F>(input, dimensions.height, input_bit_depth);
-    Ok(resize_horizontal::<T, F>(
-        &temp,
-        dimensions.width,
-        input_bit_depth,
-    ))
+    let temp = resize_vertical::<T, F>(input, dimensions.height, input_bit_depth)?;
+    resize_horizontal::<T, F>(&temp, dimensions.width, input_bit_depth)
 }
 
 #[cfg(feature = "devel")]
@@ -377,7 +378,7 @@ pub fn resample_bit_depth<T: Pixel, U: Pixel>(
 pub fn resample_chroma_sampling<T: Pixel, F: ResizeAlgorithm>(
     _input: &Frame<T>,
     input_bit_depth: usize,
-    _target_chroma_sampling: ChromaSampling,
+    _target_chroma_sampling: ChromaSubsampling,
 ) -> Result<Frame<T>> {
     if size_of::<T>() == 1 {
         ensure!(
@@ -398,7 +399,11 @@ pub fn resample_chroma_sampling<T: Pixel, F: ResizeAlgorithm>(
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::Path};
+    use std::{
+        fs,
+        num::{NonZeroU8, NonZeroUsize},
+        path::Path,
+    };
 
     use image::{DynamicImage, Rgb32FImage};
     use yuvxyb::{
@@ -406,8 +411,9 @@ mod tests {
     };
 
     use crate::{
+        CropDimensions, ResizeDimensions,
         algorithms::{BicubicCatmullRom, Bilinear, Lanczos3, Point, Spline64},
-        crop, resize, CropDimensions, ResizeDimensions,
+        crop, resize,
     };
 
     fn get_u8_test_image() -> Frame<u8> {
@@ -416,8 +422,8 @@ mod tests {
             .to_rgb32f();
         let rgb = Rgb::new(
             i.pixels().map(|p| [p[0], p[1], p[2]]).collect(),
-            i.width() as usize,
-            i.height() as usize,
+            NonZeroUsize::new(i.width() as usize).expect("not zero"),
+            NonZeroUsize::new(i.height() as usize).expect("not zero"),
             TransferCharacteristic::BT1886,
             ColorPrimaries::BT709,
         )
@@ -437,9 +443,7 @@ mod tests {
             .try_into()
             .unwrap();
         let data = yuv.data();
-        Frame {
-            planes: [data[0].clone(), data[1].clone(), data[2].clone()],
-        }
+        data.clone()
     }
 
     fn get_u16_test_image() -> Frame<u16> {
@@ -448,8 +452,8 @@ mod tests {
             .to_rgb32f();
         let rgb = Rgb::new(
             i.pixels().map(|p| [p[0], p[1], p[2]]).collect(),
-            i.width() as usize,
-            i.height() as usize,
+            NonZeroUsize::new(i.width() as usize).expect("not zero"),
+            NonZeroUsize::new(i.height() as usize).expect("not zero"),
             TransferCharacteristic::BT1886,
             ColorPrimaries::BT709,
         )
@@ -469,14 +473,12 @@ mod tests {
             .try_into()
             .unwrap();
         let data = yuv.data();
-        Frame {
-            planes: [data[0].clone(), data[1].clone(), data[2].clone()],
-        }
+        data.clone()
     }
 
     fn output_image_from_u8(image: Frame<u8>, filename: &str) {
-        let width = image.planes[0].cfg.width;
-        let height = image.planes[0].cfg.height;
+        let width = image.y_plane.width();
+        let height = image.y_plane.height();
         let yuv: Yuv<u8> = Yuv::new(
             image,
             YuvConfig {
@@ -493,8 +495,8 @@ mod tests {
         let rgb: Rgb = yuv.try_into().unwrap();
         let i = DynamicImage::ImageRgb32F(
             Rgb32FImage::from_vec(
-                width as u32,
-                height as u32,
+                width.get() as u32,
+                height.get() as u32,
                 rgb.data().iter().copied().flatten().collect(),
             )
             .unwrap(),
@@ -507,8 +509,8 @@ mod tests {
     }
 
     fn output_image_from_u16(image: Frame<u16>, filename: &str) {
-        let width = image.planes[0].cfg.width;
-        let height = image.planes[0].cfg.height;
+        let width = image.y_plane.width();
+        let height = image.y_plane.height();
         let yuv: Yuv<u16> = Yuv::new(
             image,
             YuvConfig {
@@ -525,8 +527,8 @@ mod tests {
         let rgb: Rgb = yuv.try_into().unwrap();
         let i = DynamicImage::ImageRgb32F(
             Rgb32FImage::from_vec(
-                width as u32,
-                height as u32,
+                width.get() as u32,
+                height.get() as u32,
                 rgb.data().iter().copied().flatten().collect(),
             )
             .unwrap(),
@@ -576,10 +578,10 @@ mod tests {
         let output = resize::<u8, Point>(
             &input,
             ResizeDimensions {
-                width: 1280,
-                height: 720,
+                width: NonZeroUsize::new(1280).expect("not zero"),
+                height: NonZeroUsize::new(720).expect("not zero"),
             },
-            8,
+            NonZeroU8::new(8).expect("not zero"),
         )
         .unwrap();
         output_image_from_u8(output, "/tmp/video-resize-tests/resize_point_u8_down.png");
@@ -591,10 +593,10 @@ mod tests {
         let output = resize::<u16, Point>(
             &input,
             ResizeDimensions {
-                width: 1280,
-                height: 720,
+                width: NonZeroUsize::new(1280).expect("not zero"),
+                height: NonZeroUsize::new(720).expect("not zero"),
             },
-            10,
+            NonZeroU8::new(10).expect("not zero"),
         )
         .unwrap();
         output_image_from_u16(output, "/tmp/video-resize-tests/resize_point_u16_down.png");
@@ -606,10 +608,10 @@ mod tests {
         let output = resize::<u8, Point>(
             &input,
             ResizeDimensions {
-                width: 2560,
-                height: 1440,
+                width: NonZeroUsize::new(2560).expect("not zero"),
+                height: NonZeroUsize::new(1440).expect("not zero"),
             },
-            8,
+            NonZeroU8::new(8).expect("not zero"),
         )
         .unwrap();
         output_image_from_u8(output, "/tmp/video-resize-tests/resize_point_u8_up.png");
@@ -621,10 +623,10 @@ mod tests {
         let output = resize::<u16, Point>(
             &input,
             ResizeDimensions {
-                width: 2560,
-                height: 1440,
+                width: NonZeroUsize::new(2560).expect("not zero"),
+                height: NonZeroUsize::new(1440).expect("not zero"),
             },
-            10,
+            NonZeroU8::new(10).expect("not zero"),
         )
         .unwrap();
         output_image_from_u16(output, "/tmp/video-resize-tests/resize_point_u16_up.png");
@@ -636,10 +638,10 @@ mod tests {
         let output = resize::<u8, Bilinear>(
             &input,
             ResizeDimensions {
-                width: 1280,
-                height: 720,
+                width: NonZeroUsize::new(1280).expect("not zero"),
+                height: NonZeroUsize::new(720).expect("not zero"),
             },
-            8,
+            NonZeroU8::new(8).expect("not zero"),
         )
         .unwrap();
         output_image_from_u8(
@@ -654,10 +656,10 @@ mod tests {
         let output = resize::<u16, Bilinear>(
             &input,
             ResizeDimensions {
-                width: 1280,
-                height: 720,
+                width: NonZeroUsize::new(1280).expect("not zero"),
+                height: NonZeroUsize::new(720).expect("not zero"),
             },
-            10,
+            NonZeroU8::new(10).expect("not zero"),
         )
         .unwrap();
         output_image_from_u16(
@@ -672,10 +674,10 @@ mod tests {
         let output = resize::<u8, Bilinear>(
             &input,
             ResizeDimensions {
-                width: 2560,
-                height: 1440,
+                width: NonZeroUsize::new(2560).expect("not zero"),
+                height: NonZeroUsize::new(1440).expect("not zero"),
             },
-            8,
+            NonZeroU8::new(8).expect("not zero"),
         )
         .unwrap();
         output_image_from_u8(output, "/tmp/video-resize-tests/resize_bilinear_u8_up.png");
@@ -687,10 +689,10 @@ mod tests {
         let output = resize::<u16, Bilinear>(
             &input,
             ResizeDimensions {
-                width: 2560,
-                height: 1440,
+                width: NonZeroUsize::new(2560).expect("not zero"),
+                height: NonZeroUsize::new(1440).expect("not zero"),
             },
-            10,
+            NonZeroU8::new(10).expect("not zero"),
         )
         .unwrap();
         output_image_from_u16(output, "/tmp/video-resize-tests/resize_bilinear_u16_up.png");
@@ -702,10 +704,10 @@ mod tests {
         let output = resize::<u8, BicubicCatmullRom>(
             &input,
             ResizeDimensions {
-                width: 1280,
-                height: 720,
+                width: NonZeroUsize::new(1280).expect("not zero"),
+                height: NonZeroUsize::new(720).expect("not zero"),
             },
-            8,
+            NonZeroU8::new(8).expect("not zero"),
         )
         .unwrap();
         output_image_from_u8(output, "/tmp/video-resize-tests/resize_bicubic_u8_down.png");
@@ -717,10 +719,10 @@ mod tests {
         let output = resize::<u16, BicubicCatmullRom>(
             &input,
             ResizeDimensions {
-                width: 1280,
-                height: 720,
+                width: NonZeroUsize::new(1280).expect("not zero"),
+                height: NonZeroUsize::new(720).expect("not zero"),
             },
-            10,
+            NonZeroU8::new(10).expect("not zero"),
         )
         .unwrap();
         output_image_from_u16(
@@ -735,10 +737,10 @@ mod tests {
         let output = resize::<u8, BicubicCatmullRom>(
             &input,
             ResizeDimensions {
-                width: 2560,
-                height: 1440,
+                width: NonZeroUsize::new(2560).expect("not zero"),
+                height: NonZeroUsize::new(1440).expect("not zero"),
             },
-            8,
+            NonZeroU8::new(8).expect("not zero"),
         )
         .unwrap();
         output_image_from_u8(output, "/tmp/video-resize-tests/resize_bicubic_u8_up.png");
@@ -750,10 +752,10 @@ mod tests {
         let output = resize::<u16, BicubicCatmullRom>(
             &input,
             ResizeDimensions {
-                width: 2560,
-                height: 1440,
+                width: NonZeroUsize::new(2560).expect("not zero"),
+                height: NonZeroUsize::new(1440).expect("not zero"),
             },
-            10,
+            NonZeroU8::new(10).expect("not zero"),
         )
         .unwrap();
         output_image_from_u16(output, "/tmp/video-resize-tests/resize_bicubic_u16_up.png");
@@ -765,10 +767,10 @@ mod tests {
         let output = resize::<u8, Lanczos3>(
             &input,
             ResizeDimensions {
-                width: 1280,
-                height: 720,
+                width: NonZeroUsize::new(1280).expect("not zero"),
+                height: NonZeroUsize::new(720).expect("not zero"),
             },
-            8,
+            NonZeroU8::new(8).expect("not zero"),
         )
         .unwrap();
         output_image_from_u8(output, "/tmp/video-resize-tests/resize_lanczos_u8_down.png");
@@ -780,10 +782,10 @@ mod tests {
         let output = resize::<u16, Lanczos3>(
             &input,
             ResizeDimensions {
-                width: 1280,
-                height: 720,
+                width: NonZeroUsize::new(1280).expect("not zero"),
+                height: NonZeroUsize::new(720).expect("not zero"),
             },
-            10,
+            NonZeroU8::new(10).expect("not zero"),
         )
         .unwrap();
         output_image_from_u16(
@@ -798,10 +800,10 @@ mod tests {
         let output = resize::<u8, Lanczos3>(
             &input,
             ResizeDimensions {
-                width: 2560,
-                height: 1440,
+                width: NonZeroUsize::new(2560).expect("not zero"),
+                height: NonZeroUsize::new(1440).expect("not zero"),
             },
-            8,
+            NonZeroU8::new(8).expect("not zero"),
         )
         .unwrap();
         output_image_from_u8(output, "/tmp/video-resize-tests/resize_lanczos_u8_up.png");
@@ -813,10 +815,10 @@ mod tests {
         let output = resize::<u16, Lanczos3>(
             &input,
             ResizeDimensions {
-                width: 2560,
-                height: 1440,
+                width: NonZeroUsize::new(2560).expect("not zero"),
+                height: NonZeroUsize::new(1440).expect("not zero"),
             },
-            10,
+            NonZeroU8::new(10).expect("not zero"),
         )
         .unwrap();
         output_image_from_u16(output, "/tmp/video-resize-tests/resize_lanczos_u16_up.png");
@@ -828,10 +830,10 @@ mod tests {
         let output = resize::<u8, Spline64>(
             &input,
             ResizeDimensions {
-                width: 1280,
-                height: 720,
+                width: NonZeroUsize::new(1280).expect("not zero"),
+                height: NonZeroUsize::new(720).expect("not zero"),
             },
-            8,
+            NonZeroU8::new(8).expect("not zero"),
         )
         .unwrap();
         output_image_from_u8(
@@ -846,10 +848,10 @@ mod tests {
         let output = resize::<u16, Spline64>(
             &input,
             ResizeDimensions {
-                width: 1280,
-                height: 720,
+                width: NonZeroUsize::new(1280).expect("not zero"),
+                height: NonZeroUsize::new(720).expect("not zero"),
             },
-            10,
+            NonZeroU8::new(10).expect("not zero"),
         )
         .unwrap();
         output_image_from_u16(
@@ -864,10 +866,10 @@ mod tests {
         let output = resize::<u8, Spline64>(
             &input,
             ResizeDimensions {
-                width: 2560,
-                height: 1440,
+                width: NonZeroUsize::new(2560).expect("not zero"),
+                height: NonZeroUsize::new(1440).expect("not zero"),
             },
-            8,
+            NonZeroU8::new(8).expect("not zero"),
         )
         .unwrap();
         output_image_from_u8(output, "/tmp/video-resize-tests/resize_spline64_u8_up.png");
@@ -879,10 +881,10 @@ mod tests {
         let output = resize::<u16, Spline64>(
             &input,
             ResizeDimensions {
-                width: 2560,
-                height: 1440,
+                width: NonZeroUsize::new(2560).expect("not zero"),
+                height: NonZeroUsize::new(1440).expect("not zero"),
             },
-            10,
+            NonZeroU8::new(10).expect("not zero"),
         )
         .unwrap();
         output_image_from_u16(output, "/tmp/video-resize-tests/resize_spline64_u16_up.png");

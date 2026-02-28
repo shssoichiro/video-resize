@@ -1,3 +1,8 @@
+## Version 0.2.0
+
+- Upgrade `v_frame` to 0.5
+- Bump Rust edition to 2024
+
 ## Version 0.1.1
 
 - Performance improvements for resize
